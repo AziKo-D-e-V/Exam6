@@ -1,4 +1,6 @@
 const bcrypt = require("bcrypt");
+const path = require("path");
+const { v4: uuid } = require("uuid");
 const jwt = require("../libs/jwt");
 const { generateHash, compareHash } = require("../libs/bcrypt");
 const { jwtSecretKey } = require("../../config");
@@ -6,17 +8,21 @@ const { promisify } = require("util");
 const Redis = require("ioredis");
 const nodemailer = require("nodemailer");
 const Student = require("../models/student.model");
+const Groups = require("../models/group.model");
+const Members = require("../models/members.model");
+const Exams = require("../models/exam.model");
+const Tasks = require("../models/task.model");
 
 const redis = new Redis({
   port: 6379,
   host: "127.0.0.1",
-  password: "aziz0107",
+  // password: "aziz0107",
   db: 0,
 });
 
 const register = async (req, res) => {
   try {
-    const { first_name, last_name, email, password } = req.body;
+    const { first_name, last_name, email, password, group_id } = req.body;
 
     const generate = await generateHash(password);
 
@@ -25,12 +31,9 @@ const register = async (req, res) => {
       { logging: false }
     );
 
-    console.log(findStudent.email);
-
     if (findStudent.length > 0) {
       return res.status(404).json({ message: "Student already exists" });
-    } 
-    else {
+    } else {
       redis.get("code", async (err, data) => {
         if (data) {
           return res.json(data);
@@ -122,9 +125,8 @@ const checkCode = async (req, res) => {
 
 const login = async (req, res) => {
   const { email, password } = req.body;
-    console.log(req.body);
 
-  const student = await Student.findAll({where: { email: email}});
+  const student = await Student.findAll({ where: { email: email } });
 
   if (student.length < 1) {
     return res
@@ -138,7 +140,6 @@ const login = async (req, res) => {
       .status(404)
       .json({ message: "Invalid password provided to login" });
   }
-  console.log(student[0].id);
   const token = jwt.sign({ studentId: student[0].id });
 
   res.cookie("token", token);
@@ -152,14 +153,14 @@ const changePassword = async (req, res) => {
     const { token } = req.cookies;
     const decodedToken = jwt.verify(token, jwtSecretKey);
     const studentId = decodedToken.userId;
-    
+
     const student = await Student.findByPk(studentId, { logging: false });
-    
+
     const compare = await compareHash(password, student.password);
 
     if (!compare) {
       return res.status(404).json({ message: "Invalid password" });
-    } else if ( newpass === renewpass) {
+    } else if (newpass === renewpass) {
       const generate = await generateHash(newpass);
       student.password = generate;
       await student.save({ logging: false });
@@ -175,9 +176,138 @@ const changePassword = async (req, res) => {
   }
 };
 
+const getStudent = async (req, res) => {
+  try {
+    const { token } = req.cookies;
+    const decodedToken = jwt.verify(token, jwtSecretKey);
+    console.log(decodedToken);
+    const studentId = decodedToken.studentId;
+
+    const student = await Student.findByPk(
+      studentId,
+      { include: [Groups] },
+      { logging: false }
+    );
+
+    res.status(200).json({ message: "Success", student });
+  } catch (error) {
+    console.log(error.message);
+  }
+};
+
+const getExams = async (req, res) => {
+  try {
+    const { token } = req.cookies;
+    const decodedToken = jwt.verify(token, jwtSecretKey);
+    const studentId = decodedToken.studentId;
+
+    const isMember = await Members.findOne(
+      {
+        where: { student_id: studentId },
+      },
+      { logging: false }
+    );
+
+    if (isMember) {
+      const exam = await Exams.findAll({
+        include: [Groups],
+      });
+      res.status(200).json({ message: "Succes", exam });
+    } else {
+      res.status(404).json({ message: "Not Found Exams" });
+    }
+  } catch (error) {
+    console.log(error.message);
+  }
+};
+
+//student 1 tasini olishi
+const getExam = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { token } = req.cookies;
+    const decodedToken = jwt.verify(token, jwtSecretKey);
+    const studentId = decodedToken.studentId;
+
+    const isMember = await Members.findOne({
+      where: { student_id: studentId },
+      logging: false,
+    });
+
+    if (isMember) {
+      const exam = await Exams.findAll({
+        where: { id: id },
+        include: [Groups],
+        logging: false,
+      });
+      res.status(200).json({ message: "Succes", exam });
+    } else {
+      res.status(404).json({ message: "Not Found Exams" });
+    }
+  } catch (error) {
+    console.log(error.message);
+  }
+};
+
+//exam javobini jonatish
+const sendExam = async (req, res) => {
+  try {
+    const { exam_id } = req.params;
+    const { group_id } = req.body;
+    const { data } = req.files;
+
+    console.log(group_id, exam_id);
+
+    const group = await Groups.findOne({
+      where: { id: group_id },
+      logging: false,
+    });
+
+    if (!group) {
+      return res.status(403).json({ message: "Group not found" });
+    }
+
+    const fileName = `${uuid()}${path.extname(data.name)}`;
+    data.mv(process.cwd() + "/uploads/" + fileName);
+
+    const exams = await Exams.findOne({
+      where: { id: exam_id },
+      logging: false,
+    });
+    if (exams.length === 0 || exams.duration < new Date()) {
+      const task = await Tasks.create({
+        data: fileName,
+        student_id: req.student.id,
+        logging: false,
+      });
+
+      res.status(200).json({ message: "Success", task });
+    } else {
+      const task = await Tasks.create(
+        {
+          data: fileName,
+          isActive: true,
+          student_id: req.student.id,
+          group_id,
+        },
+        { logging: false }
+      );
+      res.status(200).json({ message: "Success", task });
+    }
+  } catch (error) {
+    console.log(error.message);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 module.exports = {
   register,
+  sendExam,
   login,
+  getStudent,
+  getExam,
+  getExams,
   checkCode,
   changePassword,
 };
