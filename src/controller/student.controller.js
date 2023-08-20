@@ -64,7 +64,7 @@ const register = async (req, res) => {
             text: `Verification code`,
             html: `Login code:  <b>${verifyCode}</b><br> Do not give this code to anyone, even if they say they are from our Site<br/>`,
           };
-          //   await transporter.sendMail(mailData);
+           await transporter.sendMail(mailData);
 
           res.status(200).json({
             message:
